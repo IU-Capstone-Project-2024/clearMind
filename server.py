@@ -7,17 +7,26 @@ from langchain_community.chat_message_histories import FileChatMessageHistory
 from langchain_core import __version__
 from langchain import hub
 from langchain_core.chat_history import BaseChatMessageHistory
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables import ConfigurableFieldSpec
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
+from langchain_core.runnables import ConfigurableFieldSpec, RunnableLambda
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_openai import AzureChatOpenAI
 from typing_extensions import TypedDict
+from supabase import create_client, Client
+import cohere
+import os
 
 from langserve import add_routes
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+supabase = create_client(os.getenv('DB_LINK'), os.getenv('DB_KEY'))
+
+co = cohere.Client(
+    base_url=os.getenv('COHERE_URL'), api_key=os.getenv('COHERE_KEY')
+)
 
 # Define the minimum required version as (0, 1, 0)
 # Earlier versions did not allow specifying custom config fields in
@@ -111,9 +120,26 @@ def _per_request_config_modifier(
     config["configurable"] = configurable
     return config
 
-prompt = hub.pull("outrun32/sfbtherapy")
+prompt = ChatPromptTemplate.from_messages(("system", "You are a psychologist who is using a following technique: {technique}. Keep your responses as short as possible"))
 
-chain = prompt | AzureChatOpenAI(deployment_name="gpt-35-turbo-16k", temperature=1.8, max_tokens=1024)
+def retriever(prompt):
+    user_message = "I want to kill my friend!"
+
+    message_embedding = co.embed(
+        texts=[user_message],
+        input_type="clustering",
+        model="embed-multilingual-v3.0"
+    )
+
+    response = supabase.rpc("match_documents", {"query_embedding": message_embedding.embeddings[0]}).execute()
+
+    return prompt.invoke({"technique": response.data[0]['content']})
+
+print(retriever(prompt))
+
+
+chain = RunnableLambda(retriever(prompt)) | prompt | AzureChatOpenAI(deployment_name="gpt-35-turbo-16k", temperature=1.8, max_tokens=1024)
+
 
 
 class InputChat(TypedDict):
