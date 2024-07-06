@@ -151,7 +151,7 @@ def format_docs(docs):
 
 # )
 
-llm = AzureChatOpenAI(eployment_name="gpt-35-turbo-16k")
+llm = AzureChatOpenAI(deployment_name="gpt-35-turbo-16k")
 
 retriever = SupabaseRetriever(supabase=supabase, cohere=co)
 
