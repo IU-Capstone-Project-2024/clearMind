@@ -1,20 +1,26 @@
 import re
 from pathlib import Path
 from typing import Any, Callable, Dict, Union
+from operator import itemgetter
 
 from fastapi import FastAPI, HTTPException, Request
 from langchain_community.chat_message_histories import FileChatMessageHistory
+from langchain_community.vectorstores import SupabaseVectorStore
 from langchain_core import __version__
 from langchain import hub
+from langchain.chains import create_history_aware_retriever
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
-from langchain_core.runnables import ConfigurableFieldSpec, RunnableLambda
+from langchain_core.runnables import ConfigurableFieldSpec, RunnableParallel, RunnablePassthrough
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_openai import AzureChatOpenAI
 from typing_extensions import TypedDict
-from supabase import create_client, Client
+from supabase import create_client
+from retriever import SupabaseRetriever
+from langchain_community.chat_models.azureml_endpoint import AzureMLEndpointApiType, AzureMLChatOnlineEndpoint
 import cohere
 import os
+
 
 from langserve import add_routes
 
@@ -27,6 +33,7 @@ supabase = create_client(os.getenv('DB_LINK'), os.getenv('DB_KEY'))
 co = cohere.Client(
     base_url=os.getenv('COHERE_URL'), api_key=os.getenv('COHERE_KEY')
 )
+
 
 # Define the minimum required version as (0, 1, 0)
 # Earlier versions did not allow specifying custom config fields in
@@ -120,25 +127,39 @@ def _per_request_config_modifier(
     config["configurable"] = configurable
     return config
 
-prompt = ChatPromptTemplate.from_messages(("system", "You are a psychologist who is using a following technique: {technique}. Keep your responses as short as possible"))
+prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", 
+        "You are a professional, caring and emphatetic \
+            psychologist who is using a following technique: {technique}. \
+            Don't mention the name and the idea behind the technique to the user. \
+            Keep your responses as short as possible. \
+            Don't give advices to user and don't redirect them to real psychologist."
+        ),
+        MessagesPlaceholder(variable_name="history"),
+        ("human", "{human_input}")
+    ]
+)
 
-def retriever(prompt):
-    user_message = "I want to kill my friend!"
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
 
-    message_embedding = co.embed(
-        texts=[user_message],
-        input_type="clustering",
-        model="embed-multilingual-v3.0"
-    )
+# llm = AzureMLChatOnlineEndpoint(
+#     endpoint_url=os.getenv("COHERE_LLM_URL"),
+#     endpoint_api_type=AzureMLEndpointApiType.serverless,
+#     endpoint_api_key=os.getenv("COHERE_LLM_KEY"),
 
-    response = supabase.rpc("match_documents", {"query_embedding": message_embedding.embeddings[0]}).execute()
+# )
 
-    return prompt.invoke({"technique": response.data[0]['content']})
+llm = AzureChatOpenAI(eployment_name="gpt-35-turbo-16k")
 
-print(retriever(prompt))
+retriever = SupabaseRetriever(supabase=supabase, cohere=co)
 
+technique = itemgetter("human_input") | retriever | format_docs
 
-chain = RunnableLambda(retriever(prompt)) | prompt | AzureChatOpenAI(deployment_name="gpt-35-turbo-16k", temperature=1.8, max_tokens=1024)
+assign = RunnablePassthrough.assign(technique=technique)
+
+chain = assign | prompt | llm
 
 
 
