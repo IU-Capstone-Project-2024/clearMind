@@ -6,6 +6,10 @@ import styles from './Chat.module.css';
 export default function Chat() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
+  // generate random conversation ID with numbers in string type
+  const [conversationID, setConversationID] = useState(
+    Math.random().toString().slice(2)
+  );
 
   const sendMessage = async () => {
     if (!input.trim()) return;
@@ -18,7 +22,7 @@ export default function Chat() {
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ message: input }),
+      body: JSON.stringify({ message: input, conversationID: conversationID }),
     });
     const data = await response.json();
 
