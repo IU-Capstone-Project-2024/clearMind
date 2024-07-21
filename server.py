@@ -4,6 +4,7 @@ from typing import Any, Callable, Dict, Union
 from operator import itemgetter
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from langchain_community.chat_message_histories import FileChatMessageHistory
 from langchain_community.vectorstores import SupabaseVectorStore
 from langchain_core import __version__
@@ -134,7 +135,12 @@ prompt = ChatPromptTemplate.from_messages(
             psychologist who is using a following technique: {technique}. \
             Don't mention the name and the idea behind the technique to the user. \
             Keep your responses as short as possible. \
-            Don't give advices to user and don't redirect them to real psychologist."
+            Don't give advices to user and don't redirect them to real psychologist nor to hotline. \
+            Engage in interactive conversation with user, ask them questions one by one, wait for their response and then ask another question. \
+            Make sure the conversation sounds like a real conversation with a psychologist. \
+            Don't ever mention that you are a chatbot. \
+            Don't back off from the conversation. \
+            "
         ),
         MessagesPlaceholder(variable_name="history"),
         ("human", "{human_input}")
@@ -151,7 +157,9 @@ def format_docs(docs):
 
 # )
 
-llm = AzureChatOpenAI(deployment_name="gpt-35-turbo-16k")
+# llm = AzureChatOpenAI(deployment_name="gpt-35-turbo-16k")
+
+llm = AzureChatOpenAI(deployment_name="gpt-4o", max_tokens=512, temperature=0.4)
 
 retriever = SupabaseRetriever(supabase=supabase, cohere=co)
 
@@ -160,7 +168,6 @@ technique = itemgetter("human_input") | retriever | format_docs
 assign = RunnablePassthrough.assign(technique=technique)
 
 chain = assign | prompt | llm
-
 
 
 class InputChat(TypedDict):
@@ -195,6 +202,29 @@ chain_with_history = RunnableWithMessageHistory(
     ],
 ).with_types(input_type=InputChat)
 
+@app.get("/conversations/{user_id}", response_class=JSONResponse)
+async def get_all_conversations(user_id: str):
+    """Get all conversations for a specific user."""
+    if not _is_valid_identifier(user_id):
+        raise HTTPException(
+            status_code=400,
+            detail="User ID is not in a valid format. User ID must only contain alphanumeric characters, hyphens, and underscores."
+        )
+    
+    user_dir = Path("chat_histories") / user_id
+    if not user_dir.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="User not found."
+        )
+    
+    conversations = {}
+    for file_path in user_dir.glob("*.json"):
+        conversation_id = file_path.stem
+        with open(file_path, "r") as f:
+            conversations[conversation_id] = f.read()
+    
+    return conversations
 
 add_routes(
     app,
@@ -206,4 +236,4 @@ add_routes(
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="localhost", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
